@@ -1,6 +1,6 @@
 
 import sqlite3 
-connection = sqlite3.connect('rit.db')
+connection = sqlite3.connect('accounts.db')
 cursor = connection.cursor()
 
 cursor.execute(''' 
@@ -11,7 +11,22 @@ password TEXT NOT NULL,
 admin INTEGER NOT NULL DEFAULT 0
 )
 ''')
+
+
+
+
 connection.commit()
+
+cursor.execute("SELECT id, name, password, admin FROM accounts")
+accounts = cursor.fetchall()
+for account in accounts:
+    print("Name: {}, Password: {}, Admin: {}".format(account[1], account[2], account[3]))
+    if account[3] == 1:
+        print("Role: Admin")
+    else:
+        print("Role: Regular User")
+    print("--------------------")
+
 connection.close()
 
 print('Accounts table created succesfully.')
