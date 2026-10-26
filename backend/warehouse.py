@@ -10,8 +10,8 @@ quantity INTEGER NOT NULL DEFAULT 0)
 ''')
 
 
-
-
+#cursor.execute('''INSERT INTO warehouse_inventory (item_name, quantity) VALUES
+#(?, ?)''', ('Item A', 100))
 
 connection.commit()
 

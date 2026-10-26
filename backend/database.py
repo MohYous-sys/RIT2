@@ -17,11 +17,11 @@ admin INTEGER NOT NULL DEFAULT 0
 
 connection.commit()
 
-cursor.execute("SELECT id, name, password, admin FROM accounts")
+cursor.execute("SELECT id, name, admin FROM accounts")
 accounts = cursor.fetchall()
 for account in accounts:
-    print("Name: {}, Password: {}, Admin: {}".format(account[1], account[2], account[3]))
-    if account[3] == 1:
+    print("Name: {}, Admin: {}".format(account[1], account[2]))
+    if account[2] == 1:
         print("Role: Admin")
     else:
         print("Role: Regular User")
