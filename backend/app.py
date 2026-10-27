@@ -9,9 +9,9 @@ from flask import Flask, jsonify, request, session
 from werkzeug.security import generate_password_hash, check_password_hash
 
 try:
-    from .database import get_db_connection, init_databases
+    from .database import INVENTORY_ITEMS, INVENTORY_WAREHOUSES, get_db_connection, init_databases
 except ImportError:
-    from database import get_db_connection, init_databases
+    from database import INVENTORY_ITEMS, INVENTORY_WAREHOUSES, get_db_connection, init_databases
 
 
 def get_secret_key():
@@ -229,12 +229,27 @@ def delete_account(account_id):
 @app.route('/warehouse', methods=['GET'])
 @login_required
 def get_warehouse():
-    conn = get_db_connection('warehouse.db')
-    
-    items = conn.execute('SELECT warehouse_id, item_name, quantity FROM warehouse_inventory').fetchall()
+    conn = get_db_connection()
+
+    placeholders = ', '.join('?' for _ in INVENTORY_ITEMS)
+    items = conn.execute(
+        f'''SELECT warehouse_id, item_name, quantity, status, warehouse_code
+            FROM warehouse_inventory
+            WHERE item_name IN ({placeholders})
+            ORDER BY warehouse_id''',
+        INVENTORY_ITEMS,
+    ).fetchall()
     conn.close()
 
     return jsonify([dict(item) for item in items])
+
+
+def inventory_status_for_quantity(quantity):
+    if quantity == 0:
+        return 'Out Of Stock'
+    if quantity < 50:
+        return 'Low Stock'
+    return 'In Stock'
 
 @app.route('/places', methods=['GET'])
 @login_required
@@ -317,21 +332,43 @@ def add_warehouse_item():
     
     item_name = data.get('item_name')
     quantity = data.get('quantity')
+    warehouse_code = data.get('warehouse_code')
 
-    if not isinstance(item_name, str) or not item_name.strip():
-        return jsonify({'error': 'Valid item name required'}), 400
+    if not isinstance(item_name, str) or item_name.strip() not in INVENTORY_ITEMS:
+        return jsonify({'error': 'Unsupported inventory item'}), 400
 
-    if not isinstance(quantity, int) or quantity < 0:
+    if type(quantity) is not int or quantity < 0:
         return jsonify({'error': 'Quantity must be a non-negative integer'}), 400
-        
-    conn = get_db_connection('warehouse.db')
+    if warehouse_code not in INVENTORY_WAREHOUSES:
+        return jsonify({'error': 'Unsupported warehouse'}), 400
+
+    status = inventory_status_for_quantity(quantity)
+
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''INSERT INTO warehouse_inventory (item_name, quantity) VALUES (?, ?)''', (item_name.strip(), quantity))
+    cursor.execute(
+        '''INSERT INTO warehouse_inventory (item_name, quantity, status, warehouse_code)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(item_name, warehouse_code) DO UPDATE SET
+               quantity = warehouse_inventory.quantity + excluded.quantity,
+               status = excluded.status''',
+        (item_name.strip(), quantity, status, warehouse_code),
+    )
     conn.commit()
-    new_id = cursor.lastrowid
+    item = conn.execute(
+        '''SELECT warehouse_id, quantity, status FROM warehouse_inventory
+           WHERE item_name = ? AND warehouse_code = ?''',
+        (item_name.strip(), warehouse_code),
+    ).fetchone()
     conn.close()
 
-    return jsonify({'message': 'Item added to warehouse successfully', 'warehouse_id': new_id}), 201
+    return jsonify({
+        'message': 'Item added to warehouse successfully',
+        'warehouse_id': item['warehouse_id'],
+        'quantity': item['quantity'],
+        'status': item['status'],
+        'warehouse_code': warehouse_code,
+    }), 201
 
 @app.route('/warehouse/<int:warehouse_id>', methods=['PUT'])
 @login_required
@@ -343,38 +380,71 @@ def update_warehouse_item(warehouse_id):
 
     item_name = data.get('item_name')
     quantity = data.get('quantity')
+    warehouse_code = data.get('warehouse_code')
 
 
-    if not isinstance(item_name, str) or not item_name.strip():
-        return jsonify({'error': 'Valid item name required'}), 400
+    if not isinstance(item_name, str) or item_name.strip() not in INVENTORY_ITEMS:
+        return jsonify({'error': 'Unsupported inventory item'}), 400
 
     if type(quantity) is not int or quantity < 0:
         return jsonify({'error': 'Quantity must be a non-negative integer'}), 400
+    if warehouse_code not in INVENTORY_WAREHOUSES:
+        return jsonify({'error': 'Unsupported warehouse'}), 400
 
-    
+    status = inventory_status_for_quantity(quantity)
 
-    conn = get_db_connection('warehouse.db')
+
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''UPDATE warehouse_inventory SET item_name = ?, quantity = ? WHERE warehouse_id = ?''', (item_name.strip(), quantity, warehouse_id))
+    current_item = cursor.execute(
+        'SELECT warehouse_id FROM warehouse_inventory WHERE warehouse_id = ?',
+        (warehouse_id,),
+    ).fetchone()
+    if not current_item:
+        conn.close()
+        return jsonify({'error': 'Item not found'}), 404
+
+    matching_item = cursor.execute(
+        '''SELECT warehouse_id FROM warehouse_inventory
+           WHERE item_name = ? AND warehouse_code = ? AND warehouse_id != ?''',
+        (item_name.strip(), warehouse_code, warehouse_id),
+    ).fetchone()
+    if matching_item:
+        cursor.execute(
+            '''UPDATE warehouse_inventory SET quantity = quantity + ?, status = ?
+               WHERE warehouse_id = ?''',
+            (quantity, status, matching_item['warehouse_id']),
+        )
+        cursor.execute('DELETE FROM warehouse_inventory WHERE warehouse_id = ?', (warehouse_id,))
+        warehouse_id = matching_item['warehouse_id']
+    else:
+        cursor.execute(
+            '''UPDATE warehouse_inventory
+               SET item_name = ?, quantity = ?, status = ?, warehouse_code = ?
+               WHERE warehouse_id = ?''',
+            (item_name.strip(), quantity, status, warehouse_code, warehouse_id),
+        )
     conn.commit()
-    updated_rows = cursor.rowcount
+    item = cursor.execute(
+        '''SELECT warehouse_id, quantity, status FROM warehouse_inventory
+           WHERE warehouse_id = ?''',
+        (warehouse_id,),
+    ).fetchone()
     conn.close()
 
-    if updated_rows == 0:
-        return jsonify({'error': 'Item not found'}), 404
-    
-    
-
     return jsonify({
-      'message': 'Item updated successfully','warehouse_id': warehouse_id,
-      'quantity': quantity
+        'message': 'Item updated successfully',
+        'warehouse_id': item['warehouse_id'],
+        'quantity': item['quantity'],
+        'status': item['status'],
+        'warehouse_code': warehouse_code,
     }), 200
     
 
 @app.route('/warehouse/<int:warehouse_id>', methods=['DELETE'])
 @login_required
 def delete_warehouse_item(warehouse_id):
-    conn = get_db_connection('warehouse.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''DELETE FROM warehouse_inventory WHERE warehouse_id = ?''', (warehouse_id,))
     conn.commit()

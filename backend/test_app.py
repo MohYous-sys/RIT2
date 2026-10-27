@@ -43,6 +43,11 @@ class BackendApiTests(unittest.TestCase):
         connection.execute("DELETE FROM requests")
         connection.commit()
         connection.close()
+
+        connection = database.get_db_connection()
+        connection.execute("DELETE FROM warehouse_inventory")
+        connection.commit()
+        connection.close()
         self.client = self.app.test_client()
 
     def create_authenticated_account(self):
@@ -112,6 +117,204 @@ class BackendApiTests(unittest.TestCase):
             columns,
             {"request_id", "account_id", "item_name", "quantity", "status", "created_at"},
         )
+
+    def test_warehouse_only_accepts_supported_items_and_statuses(self):
+        self.create_authenticated_account()
+
+        response = self.client.post(
+            "/warehouse",
+            json={
+                "item_name": "Drinking Water",
+                "quantity": 49,
+                "status": "In Stock",
+                "warehouse_code": "WH-001",
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+
+        item = self.client.get("/warehouse").json[0]
+        self.assertEqual(item["item_name"], "Drinking Water")
+        self.assertEqual(item["status"], "Low Stock")
+        self.assertEqual(item["warehouse_code"], "WH-001")
+
+        item_id = item["warehouse_id"]
+        merged = self.client.post(
+            "/warehouse",
+            json={"item_name": "Drinking Water", "quantity": 1, "warehouse_code": "WH-001"},
+        )
+        self.assertEqual(merged.status_code, 201)
+        self.assertEqual(merged.json["warehouse_id"], item_id)
+        self.assertEqual(merged.json["quantity"], 50)
+        self.assertEqual(merged.json["status"], "In Stock")
+
+        separate_warehouse = self.client.post(
+            "/warehouse",
+            json={"item_name": "Drinking Water", "quantity": 5, "warehouse_code": "WH-002"},
+        )
+        self.assertEqual(separate_warehouse.status_code, 201)
+        self.assertNotEqual(separate_warehouse.json["warehouse_id"], item_id)
+
+        for quantity, expected_status, submitted_status in (
+            (0, "Out Of Stock", "In Stock"),
+            (49, "Low Stock", "Out Of Stock"),
+            (50, "In Stock", "Low Stock"),
+            (51, "In Stock", "Out Of Stock"),
+        ):
+            with self.subTest(quantity=quantity):
+                response = self.client.put(
+                    f"/warehouse/{item_id}",
+                    json={
+                        "item_name": "Drinking Water",
+                        "quantity": quantity,
+                        "status": submitted_status,
+                        "warehouse_code": "WH-001",
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json["status"], expected_status)
+                self.assertEqual(self.client.get("/warehouse").json[0]["status"], expected_status)
+
+        invalid_warehouse = self.client.post(
+            "/warehouse",
+            json={"item_name": "Food Packs", "quantity": 1, "warehouse_code": "WH-006"},
+        )
+        self.assertEqual(invalid_warehouse.status_code, 400)
+
+        for item_name in ("Blankets", "Laptop", "drinking water"):
+            with self.subTest(item_name=item_name):
+                self.assertEqual(
+                    self.client.post(
+                        "/warehouse",
+                        json={"item_name": item_name, "quantity": 1},
+                    ).status_code,
+                    400,
+                )
+
+    def test_warehouse_schema_constrains_status(self):
+        connection = database.get_db_connection()
+        columns = {
+            row["name"]: row for row in connection.execute("PRAGMA table_info(warehouse_inventory)")
+        }
+        self.assertIn("status", columns)
+        with self.assertRaises(Exception):
+            connection.execute(
+                "INSERT INTO warehouse_inventory (item_name, quantity, status) VALUES (?, ?, ?)",
+                ("Drinking Water", 1, "pending"),
+            )
+        connection.execute(
+            "INSERT INTO warehouse_inventory (item_name, quantity, status) VALUES (?, ?, ?)",
+            ("Drinking Water", 49, "In Stock"),
+        )
+        item_id = connection.execute("SELECT last_insert_rowid()").fetchone()[0]
+        self.assertEqual(
+            connection.execute(
+                "SELECT status FROM warehouse_inventory WHERE warehouse_id = ?", (item_id,)
+            ).fetchone()[0],
+            "Low Stock",
+        )
+        connection.execute(
+            "UPDATE warehouse_inventory SET quantity = 50, status = 'Low Stock' WHERE warehouse_id = ?",
+            (item_id,),
+        )
+        self.assertEqual(
+            connection.execute(
+                "SELECT status FROM warehouse_inventory WHERE warehouse_id = ?", (item_id,)
+            ).fetchone()[0],
+            "In Stock",
+        )
+        connection.close()
+
+    def test_split_databases_migrate_into_rit_db_once(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            database, "DATABASE_DIR", Path(directory)
+        ):
+            account_connection = database.get_db_connection("accounts.db")
+            account_connection.execute(
+                "CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT, password TEXT)"
+            )
+            account_connection.execute(
+                "INSERT INTO accounts VALUES (1, 'Rand', 'existing-hash')"
+            )
+            account_connection.commit()
+            account_connection.close()
+
+            warehouse_connection = database.get_db_connection("warehouse.db")
+            warehouse_connection.execute(
+                """CREATE TABLE warehouse_inventory (
+                    warehouse_id INTEGER PRIMARY KEY,
+                    item_name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+            warehouse_connection.executemany(
+                "INSERT INTO warehouse_inventory VALUES (?, ?, ?)",
+                [
+                    (1, "Drinking Water", 49),
+                    (2, "Food Packs", 50),
+                    (3, "First Aid Kits", 51),
+                    (4, "Medical Supplies", 0),
+                    (5, "Laptop", 4),
+                ],
+            )
+            warehouse_connection.commit()
+            warehouse_connection.close()
+
+            database.init_databases()
+            database.init_databases()
+            connection = database.get_db_connection()
+            accounts = connection.execute("SELECT name, password FROM accounts").fetchall()
+            items = connection.execute(
+                "SELECT item_name, quantity, status, warehouse_code FROM warehouse_inventory ORDER BY warehouse_id"
+            ).fetchall()
+            connection.close()
+
+            self.assertEqual([tuple(account) for account in accounts], [("Rand", "existing-hash")])
+            self.assertEqual(
+                [tuple(item) for item in items],
+                [
+                    ("Drinking Water", 49, "Low Stock", "WH-001"),
+                    ("Food Packs", 50, "In Stock", "WH-001"),
+                    ("First Aid Kits", 51, "In Stock", "WH-001"),
+                    ("Medical Supplies", 0, "Out Of Stock", "WH-001"),
+                ],
+            )
+
+    def test_warehouse_migration_archives_unsupported_items(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            database, "DATABASE_DIR", Path(directory)
+        ):
+            connection = database.get_db_connection()
+            connection.execute(
+                """CREATE TABLE warehouse_inventory (
+                    warehouse_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+            connection.executemany(
+                "INSERT INTO warehouse_inventory (item_name, quantity) VALUES (?, ?)",
+                [("Drinking Water", 8), ("Laptop", 3), ("Medical Supplies", 0)],
+            )
+            connection.commit()
+            connection.close()
+
+            database.init_databases()
+            connection = database.get_db_connection()
+            active_items = connection.execute(
+                "SELECT item_name, quantity, status, warehouse_code FROM warehouse_inventory ORDER BY warehouse_id"
+            ).fetchall()
+            archived_items = connection.execute(
+                "SELECT item_name FROM warehouse_inventory_legacy ORDER BY warehouse_id"
+            ).fetchall()
+            connection.close()
+            self.assertEqual(
+                [tuple(item) for item in active_items],
+                [
+                    ("Drinking Water", 8, "Low Stock", "WH-001"),
+                    ("Medical Supplies", 0, "Out Of Stock", "WH-001"),
+                ],
+            )
+            self.assertEqual([item["item_name"] for item in archived_items], ["Drinking Water", "Laptop", "Medical Supplies"])
 
     def test_production_requires_explicit_secret(self):
         with patch.dict(os.environ, {"APP_ENV": "production"}, clear=True):

@@ -1,4 +1,4 @@
-import { Box, FileText, LayoutGrid, LogIn, Plus, Shuffle, X } from "lucide-react";
+import { Box, FileText, LayoutGrid, LogIn, LogOut, Plus, Shuffle, X } from "lucide-react";
 
 const navigation = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
@@ -7,7 +7,7 @@ const navigation = [
   { id: "allocation", label: "Allocation", icon: Shuffle },
 ];
 
-export default function Sidebar({ activePage, onNavigate, mobileOpen, onClose }) {
+export default function Sidebar({ activePage, onNavigate, mobileOpen, onClose, authenticated, onLogin, onLogout }) {
   return (
     <>
       {mobileOpen && (
@@ -53,10 +53,11 @@ export default function Sidebar({ activePage, onNavigate, mobileOpen, onClose })
         <div className="mt-auto border-t border-[#2d3749] pt-[18px]">
           <button
             type="button"
+            onClick={authenticated ? onLogout : onLogin}
             className="flex h-[42px] w-full items-center gap-3 rounded-[8px] px-3 text-[13px] font-semibold text-[#c6d0df] transition-colors hover:bg-[#253044] hover:text-white focus-visible:outline-2 focus-visible:outline-blue-400"
           >
-            <LogIn size={18} strokeWidth={1.8} aria-hidden="true" />
-            <span>Log in</span>
+            {authenticated ? <LogOut size={18} strokeWidth={1.8} aria-hidden="true" /> : <LogIn size={18} strokeWidth={1.8} aria-hidden="true" />}
+            <span>{authenticated ? "Log out" : "Log in"}</span>
           </button>
         </div>
       </aside>

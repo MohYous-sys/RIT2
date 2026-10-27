@@ -7,4 +7,12 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  server: {
+    proxy: {
+      '/login': 'http://127.0.0.1:5001',
+      '/logout': 'http://127.0.0.1:5001',
+      '/session': 'http://127.0.0.1:5001',
+      '/warehouse': 'http://127.0.0.1:5001',
+    },
+  },
 })

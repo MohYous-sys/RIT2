@@ -25,7 +25,7 @@ python -m venv .venv
 pip install -r backend/requirements.txt
 ```
 
-Run the Flask development server with `python backend/app.py` or `npm run api`. The database schemas, including `requests.db`, are created automatically. In development, the app creates a persistent local Flask secret if `FLASK_SECRET_KEY` is not set.
+Run the Flask development server with `python backend/app.py` or `npm run api`. Account and inventory data use `backend/rit.db`; places and requests retain their existing database files. On startup, valid records in legacy `accounts.db` and `warehouse.db` files are migrated into `rit.db`. In development, the app creates a persistent local Flask secret if `FLASK_SECRET_KEY` is not set.
 
 Run backend tests from the repository root:
 
