@@ -4,7 +4,6 @@ const navigation = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "requests", label: "Requests", icon: FileText, count: 0},
   { id: "inventory", label: "Inventory", icon: Box },
-  { id: "allocation", label: "Allocation", icon: Shuffle },
 ];
 
 export default function Sidebar({ activePage, onNavigate, mobileOpen, onClose, authenticated, onLogin, onLogout }) {

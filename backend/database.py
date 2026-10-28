@@ -10,6 +10,12 @@ MAIN_DATABASE = "rit.db"
 INVENTORY_ITEMS = ("Drinking Water", "Food Packs", "First Aid Kits", "Medical Supplies")
 INVENTORY_STATUSES = ("In Stock", "Low Stock", "Out Of Stock")
 INVENTORY_WAREHOUSES = tuple(f"WH-{number:03d}" for number in range(1, 6))
+REQUEST_SHELTERS = (
+    "Downtown Emergency Shelter",
+    "Creek Relief Center",
+    "Marina Support Hub",
+    "Al Barsha Temporary Shelter",
+)
 
 
 def get_db_connection(database_name=MAIN_DATABASE):
@@ -237,14 +243,69 @@ def init_databases():
                 request_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
                 item_name TEXT NOT NULL,
-                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                shelter TEXT NOT NULL DEFAULT '',
+                quantity INTEGER NOT NULL CHECK (quantity >= 0),
+                urgency TEXT NOT NULL DEFAULT 'Moderate'
+                    CHECK (urgency IN ('Critical', 'High', 'Moderate')),
                 status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'approved', 'fulfilled', 'rejected')),
+                    CHECK (status IN ('pending', 'approved')),
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        request_columns = {
+            column["name"] for column in connection.execute("PRAGMA table_info(requests)")
+        }
+        if "shelter" not in request_columns:
+            connection.execute(
+                "ALTER TABLE requests ADD COLUMN shelter TEXT NOT NULL DEFAULT ''"
+            )
+        if "urgency" not in request_columns:
+            connection.execute(
+                """ALTER TABLE requests ADD COLUMN urgency TEXT NOT NULL DEFAULT 'Moderate'
+                   CHECK (urgency IN ('Critical', 'High', 'Moderate'))"""
+            )
+        request_table = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'requests'"
+        ).fetchone()
+        request_table_sql = request_table["sql"]
+        if (
+            "'fulfilled'" in request_table_sql
+            or "'rejected'" in request_table_sql
+            or "quantity > 0" in request_table_sql
+        ):
+            connection.executescript(
+                """ALTER TABLE requests RENAME TO requests_legacy;
+                   CREATE TABLE requests (
+                       request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       account_id INTEGER NOT NULL,
+                       item_name TEXT NOT NULL,
+                       shelter TEXT NOT NULL DEFAULT '',
+                       quantity INTEGER NOT NULL CHECK (quantity >= 0),
+                       urgency TEXT NOT NULL DEFAULT 'Moderate'
+                           CHECK (urgency IN ('Critical', 'High', 'Moderate')),
+                       status TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'approved')),
+                       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                   );
+                   INSERT INTO requests
+                       (request_id, account_id, item_name, shelter, quantity, urgency, status, created_at)
+                   SELECT request_id, account_id, item_name, shelter,
+                       CASE WHEN status = 'fulfilled' THEN 0 ELSE quantity END,
+                       urgency,
+                       CASE
+                           WHEN status = 'fulfilled' THEN 'approved'
+                           WHEN status = 'approved' AND quantity = 0 THEN 'approved'
+                           ELSE 'pending'
+                       END,
+                       created_at
+                   FROM requests_legacy;
+                   DROP TABLE requests_legacy;"""
+            )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_requests_account_id ON requests(account_id)"
+        )
+        connection.execute(
+            "UPDATE requests SET status = 'pending' WHERE status = 'approved' AND quantity > 0"
         )
         connection.commit()
 
@@ -253,36 +314,4 @@ if __name__ == "__main__":
     init_databases()
     print("Database schemas are ready.")
 
-
-import sqlite3('requests.db')
-def create_requests_database():
-    conn = sqlite3.connect
-    cursor = conn.cursor()
-
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS requests (
-    id TEXT PRIMARY KEY
-       CHECK(id IN ('req-001', 'req-002', 'req-003', 'req-004', 'req-005')),
-    item TEXT NOT NULL
-       CHECK(item IN ('Drinking water', 'Food pack', 'First aid kits', 'Medical supplies'
-       )),
-    amount INTEGER NOT NULL CHECK(amount > 0),
-    status TEXT NOT NULL DEFAULT 'Pending'
-       CHECK(status IN ('Done', 'Pending')),
-    need TEXT NOT NULL 
-       CHECK(need IN ('Critical', 'Meduim', 'Low'))
-
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-create_requests_database()
-
-
-       
-       
-       
-       
        

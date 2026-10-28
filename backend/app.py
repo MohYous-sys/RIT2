@@ -9,9 +9,25 @@ from flask import Flask, jsonify, request, session
 from werkzeug.security import generate_password_hash, check_password_hash
 
 try:
-    from .database import INVENTORY_ITEMS, INVENTORY_WAREHOUSES, get_db_connection, init_databases
+    from .database import (
+        INVENTORY_ITEMS,
+        INVENTORY_WAREHOUSES,
+        DATABASE_DIR,
+        MAIN_DATABASE,
+        REQUEST_SHELTERS,
+        get_db_connection,
+        init_databases,
+    )
 except ImportError:
-    from database import INVENTORY_ITEMS, INVENTORY_WAREHOUSES, get_db_connection, init_databases
+    from database import (
+        INVENTORY_ITEMS,
+        INVENTORY_WAREHOUSES,
+        DATABASE_DIR,
+        MAIN_DATABASE,
+        REQUEST_SHELTERS,
+        get_db_connection,
+        init_databases,
+    )
 
 
 def get_secret_key():
@@ -458,7 +474,7 @@ def delete_warehouse_item(warehouse_id):
 
 
 
-REQUEST_STATUSES = {'pending', 'approved', 'fulfilled', 'rejected'}
+REQUEST_STATUSES = {'pending', 'approved'}
 
 
 @app.route('/requests', methods=['GET'])
@@ -466,7 +482,7 @@ REQUEST_STATUSES = {'pending', 'approved', 'fulfilled', 'rejected'}
 def get_requests():
     connection = get_db_connection('requests.db')
     requests = connection.execute(
-        '''SELECT request_id, account_id, item_name, quantity, status, created_at
+        '''SELECT request_id, account_id, item_name, shelter, quantity, urgency, status, created_at
            FROM requests ORDER BY created_at DESC, request_id DESC'''
     ).fetchall()
     connection.close()
@@ -482,17 +498,23 @@ def add_request():
 
     item_name = data.get('item_name')
     quantity = data.get('quantity')
-    if not isinstance(item_name, str) or not item_name.strip():
-        return jsonify({'error': 'Valid item name required'}), 400
+    shelter = data.get('shelter', '')
+    urgency = data.get('urgency', 'Moderate')
+    if not isinstance(item_name, str) or item_name.strip() not in INVENTORY_ITEMS:
+        return jsonify({'error': 'Unsupported inventory item'}), 400
     if type(quantity) is not int or quantity <= 0:
         return jsonify({'error': 'Quantity must be a positive integer'}), 400
+    if not isinstance(shelter, str) or shelter not in REQUEST_SHELTERS:
+        return jsonify({'error': 'Unsupported shelter'}), 400
+    if not isinstance(urgency, str) or urgency not in {'Critical', 'High', 'Moderate'}:
+        return jsonify({'error': 'Valid request urgency required'}), 400
 
     connection = get_db_connection('requests.db')
     cursor = connection.cursor()
     cursor.execute(
-        '''INSERT INTO requests (account_id, item_name, quantity)
-           VALUES (?, ?, ?)''',
-        (session['account_id'], item_name.strip(), quantity),
+        '''INSERT INTO requests (account_id, item_name, shelter, quantity, urgency)
+           VALUES (?, ?, ?, ?, ?)''',
+        (session['account_id'], item_name.strip(), shelter.strip(), quantity, urgency),
     )
     connection.commit()
     request_id = cursor.lastrowid
@@ -505,7 +527,7 @@ def add_request():
 def get_request(request_id):
     connection = get_db_connection('requests.db')
     item = connection.execute(
-        '''SELECT request_id, account_id, item_name, quantity, status, created_at
+        '''SELECT request_id, account_id, item_name, shelter, quantity, urgency, status, created_at
            FROM requests WHERE request_id = ?''',
         (request_id,),
     ).fetchone()
@@ -525,26 +547,104 @@ def update_request(request_id):
     item_name = data.get('item_name')
     quantity = data.get('quantity')
     status = data.get('status')
-    if not isinstance(item_name, str) or not item_name.strip():
-        return jsonify({'error': 'Valid item name required'}), 400
+    shelter = data.get('shelter')
+    urgency = data.get('urgency')
+    if not isinstance(item_name, str) or item_name.strip() not in INVENTORY_ITEMS:
+        return jsonify({'error': 'Unsupported inventory item'}), 400
     if type(quantity) is not int or quantity <= 0:
         return jsonify({'error': 'Quantity must be a positive integer'}), 400
     if not isinstance(status, str) or status not in REQUEST_STATUSES:
         return jsonify({'error': 'Valid request status required'}), 400
+    if shelter is not None and (
+        not isinstance(shelter, str) or shelter not in REQUEST_SHELTERS
+    ):
+        return jsonify({'error': 'Unsupported shelter'}), 400
+    if urgency is not None and (
+        not isinstance(urgency, str) or urgency not in {'Critical', 'High', 'Moderate'}
+    ):
+        return jsonify({'error': 'Valid request urgency required'}), 400
 
     connection = get_db_connection('requests.db')
-    cursor = connection.cursor()
-    cursor.execute(
-        '''UPDATE requests SET item_name = ?, quantity = ?, status = ?
-           WHERE request_id = ?''',
-        (item_name.strip(), quantity, status, request_id),
+    connection.execute(
+        'ATTACH DATABASE ? AS inventory_db',
+        (str(DATABASE_DIR / MAIN_DATABASE),),
     )
-    connection.commit()
-    updated_rows = cursor.rowcount
+    cursor = connection.cursor()
+    try:
+        connection.execute('BEGIN IMMEDIATE')
+        current = cursor.execute(
+            'SELECT status, quantity FROM requests WHERE request_id = ?',
+            (request_id,),
+        ).fetchone()
+        if not current:
+            connection.rollback()
+            connection.close()
+            return jsonify({'error': 'Request not found'}), 404
+        if current['status'] == 'approved':
+            if status != 'approved':
+                connection.rollback()
+                connection.close()
+                return jsonify({'error': 'Approved requests cannot be reopened'}), 400
+            connection.commit()
+            connection.close()
+            return jsonify({
+                'message': 'Request is already approved',
+                'request_id': request_id,
+                'quantity': current['quantity'],
+                'status': current['status'],
+                'fulfilled_quantity': 0,
+            }), 200
+
+        remaining_quantity = quantity
+        fulfilled_quantity = 0
+        final_status = status
+        if status == 'approved':
+            inventory_rows = cursor.execute(
+                '''SELECT warehouse_id, quantity
+                   FROM inventory_db.warehouse_inventory
+                   WHERE item_name = ? AND quantity > 0
+                   ORDER BY warehouse_code, warehouse_id''',
+                (item_name.strip(),),
+            ).fetchall()
+            for inventory_row in inventory_rows:
+                amount_to_deduct = min(inventory_row['quantity'], remaining_quantity)
+                if amount_to_deduct == 0:
+                    break
+                cursor.execute(
+                    '''UPDATE inventory_db.warehouse_inventory
+                       SET quantity = quantity - ? WHERE warehouse_id = ?''',
+                    (amount_to_deduct, inventory_row['warehouse_id']),
+                )
+                remaining_quantity -= amount_to_deduct
+            fulfilled_quantity = quantity - remaining_quantity
+            final_status = 'approved' if remaining_quantity == 0 else 'pending'
+
+        cursor.execute(
+            '''UPDATE requests SET item_name = ?, quantity = ?, status = ?,
+               shelter = COALESCE(?, shelter), urgency = COALESCE(?, urgency)
+               WHERE request_id = ?''',
+            (
+                item_name.strip(),
+                remaining_quantity,
+                final_status,
+                shelter.strip() if shelter is not None else None,
+                urgency,
+                request_id,
+            ),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        connection.close()
+        raise
     connection.close()
-    if updated_rows == 0:
-        return jsonify({'error': 'Request not found'}), 404
-    return jsonify({'message': 'Request updated successfully', 'request_id': request_id}), 200
+    return jsonify({
+        'message': 'Request updated successfully',
+        'request_id': request_id,
+        'quantity': remaining_quantity,
+        'status': final_status,
+        'fulfilled_quantity': fulfilled_quantity,
+    }), 200
 
 
 @app.route('/requests/<int:request_id>', methods=['DELETE'])

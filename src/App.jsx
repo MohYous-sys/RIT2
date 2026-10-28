@@ -1,10 +1,16 @@
 
 import { useEffect, useState } from "react";
-import { ChevronRight, Search, Plus } from "lucide-react";
+import { ChevronRight, Search, Plus, Trash2 } from "lucide-react";
 import Sidebar from "./Sidebar";
 
 const inventoryItems = ["Drinking Water", "Food Packs", "First Aid Kits", "Medical Supplies"];
 const inventoryWarehouses = ["WH-001", "WH-002", "WH-003", "WH-004", "WH-005"];
+const requestShelters = [
+  "Red Crecent Shelter",
+  "Aman Shelter",
+  "Al Awir Centre for Harboring",
+  "Al Barsha Temporary Shelter",
+];
 
 const statusStyles = {
   "In Stock": "bg-green-50 text-green-600",
@@ -260,7 +266,6 @@ function InventoryPage({ authenticated, onRequestLogin }) {
                     <span className="font-bold">
                       {product.quantity.toLocaleString()}
                     </span>
-
                     <span className="ml-1 text-[#607597]">
                       units
                     </span>
@@ -279,6 +284,269 @@ function InventoryPage({ authenticated, onRequestLogin }) {
               ))}
             </tbody>
           </table>
+        </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+
+const urgencyStyles = {
+  Critical: "bg-[#fff0f0] text-[#ef3030]",
+  High: "bg-[#fff6ed] text-[#f06b13]",
+  Moderate: "bg-[#fffaea] text-[#ca8b00]",
+};
+
+const requestStatusStyles = {
+  pending: "bg-[#edf5ff] text-[#2863f5]",
+  approved: "bg-[#fff9e9] text-[#d78a00]",
+};
+
+const requestStatuses = ["pending", "approved"];
+const requestUrgencies = ["Critical", "High", "Moderate"];
+
+function SupplyRequestsPage({ authenticated, onRequestLogin }) {
+  const [requests, setRequests] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
+  const [urgencyFilter, setUrgencyFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [showNewRequest, setShowNewRequest] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [newRequest, setNewRequest] = useState({
+    shelter: "",
+    item_name: "",
+    quantity: "",
+    urgency: "Moderate",
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRequests() {
+      if (!authenticated) {
+        setRequests([]);
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError("");
+      try {
+        const response = await fetch("/requests", { credentials: "same-origin" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Unable to load requests.");
+        if (!cancelled) setRequests(data);
+      } catch (loadError) {
+        if (!cancelled) setError(loadError.message || "Unable to connect to the requests service.");
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }
+
+    loadRequests();
+    return () => { cancelled = true; };
+  }, [authenticated, refreshKey]);
+
+  async function createRequest(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const response = await fetch("/requests", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...newRequest, quantity: Number(newRequest.quantity) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to create request.");
+      setNewRequest({ shelter: "", item_name: "", quantity: "", urgency: "Moderate" });
+      setShowNewRequest(false);
+      setRefreshKey((key) => key + 1);
+    } catch (createError) {
+      setError(createError.message || "Unable to create request.");
+    }
+  }
+
+  async function updateRequestStatus(item, status) {
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`/requests/${item.request_id}`, {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...item, status }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to update request.");
+      setRequests((current) => current.map((request) => (
+        request.request_id === item.request_id
+          ? { ...request, status: data.status, quantity: data.quantity }
+          : request
+      )));
+      if (status === "approved") {
+        if (data.fulfilled_quantity === 0) {
+          setNotice("No matching inventory was available. The request remains pending.");
+        } else if (data.status === "pending") {
+          setNotice(`${data.fulfilled_quantity} supplied. ${data.quantity} remain pending.`);
+        } else {
+          setNotice(`${data.fulfilled_quantity} supplied. The request is fully approved.`);
+        }
+      }
+    } catch (updateError) {
+      setError(updateError.message || "Unable to update request.");
+    }
+  }
+
+  async function deleteRequest(requestId) {
+    if (!window.confirm("Delete this request?")) return;
+    setError("");
+    try {
+      const response = await fetch(`/requests/${requestId}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to delete request.");
+      setRequests((current) => current.filter((request) => request.request_id !== requestId));
+    } catch (deleteError) {
+      setError(deleteError.message || "Unable to delete request.");
+    }
+  }
+
+  const filteredRequests = requests.filter((request) => {
+    const query = search.trim().toLowerCase();
+    const matchesSearch = !query || [request.shelter, request.item_name, request.request_id]
+      .some((value) => String(value ?? "").toLowerCase().includes(query));
+    const matchesUrgency = urgencyFilter === "all" || request.urgency === urgencyFilter;
+    const matchesStatus = statusFilter === "all" || request.status === statusFilter;
+    return matchesSearch && matchesUrgency && matchesStatus;
+  });
+
+  return (
+    <main className="min-h-[calc(100vh-78px)] bg-[#f7f9fc] px-[17px] py-[20px] text-[#101f3d] md:px-[30px]">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-[27px] font-bold tracking-tight">Supply Requests</h1>
+          <p className="mt-1.5 text-[13px] text-[#7184a1]">Review and manage shelter supply needs.</p>
+        </div>
+        <button type="button" onClick={() => authenticated ? setShowNewRequest((visible) => !visible) : onRequestLogin()} className="flex h-[39px] items-center gap-2 rounded-lg bg-[#2d5df1] px-[17px] text-[12px] font-semibold text-white shadow-md shadow-blue-200">
+          <Plus size={16} aria-hidden="true" />
+          New Request
+        </button>
+      </div>
+
+      {showNewRequest && (
+        <form onSubmit={createRequest} className="mb-[18px] flex flex-wrap items-end gap-3 border-b border-[#dbe4f0] bg-white px-[18px] py-[16px]">
+          <label className="flex min-w-[190px] flex-1 flex-col gap-1 text-[11px] font-semibold text-[#536989]">
+            Shelter
+            <select required value={newRequest.shelter} onChange={(event) => setNewRequest({ ...newRequest, shelter: event.target.value })} className="h-[36px] rounded-md border border-[#dbe4f0] bg-white px-2 text-[12px] text-[#101f3d]">
+              <option value="" disabled>Select a shelter</option>
+              {requestShelters.map((shelter) => <option key={shelter}>{shelter}</option>)}
+            </select>
+          </label>
+          <label className="flex min-w-[180px] flex-1 flex-col gap-1 text-[11px] font-semibold text-[#536989]">
+            Requested item
+            <select required value={newRequest.item_name} onChange={(event) => setNewRequest({ ...newRequest, item_name: event.target.value })} className="h-[36px] rounded-md border border-[#dbe4f0] bg-white px-2 text-[12px] text-[#101f3d]">
+              <option value="" disabled>Select an item</option>
+              {inventoryItems.map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+          <label className="flex w-[110px] flex-col gap-1 text-[11px] font-semibold text-[#536989]">
+            Quantity
+            <input type="number" min="1" required value={newRequest.quantity} onChange={(event) => setNewRequest({ ...newRequest, quantity: event.target.value })} className="h-[36px] rounded-md border border-[#dbe4f0] px-2 text-[12px] text-[#101f3d]" />
+          </label>
+          <label className="flex w-[130px] flex-col gap-1 text-[11px] font-semibold text-[#536989]">
+            Urgency
+            <select value={newRequest.urgency} onChange={(event) => setNewRequest({ ...newRequest, urgency: event.target.value })} className="h-[36px] rounded-md border border-[#dbe4f0] bg-white px-2 text-[12px] text-[#101f3d]">
+              {requestUrgencies.map((urgency) => <option key={urgency}>{urgency}</option>)}
+            </select>
+          </label>
+          <button type="submit" className="h-[36px] rounded-md bg-[#2d5df1] px-4 text-[12px] font-semibold text-white">Save request</button>
+        </form>
+      )}
+
+      <section className="overflow-hidden rounded-xl border border-[#dbe4f0] bg-white shadow-sm">
+        <div className="flex flex-wrap items-center gap-[10px] border-b border-[#dbe4f0] px-[18px] py-[15px]">
+          <div className="flex h-[36px] w-full max-w-[340px] items-center gap-2 rounded-md border border-[#dbe4f0] px-3 text-[#8ca0bc]">
+            <Search size={16} aria-hidden="true" />
+            <input type="text" placeholder="Search requests..." value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search requests" className="w-full bg-transparent text-[12px] outline-none placeholder:text-[#9aaac0]" />
+          </div>
+          <select aria-label="Filter by urgency" value={urgencyFilter} onChange={(event) => setUrgencyFilter(event.target.value)} className="h-[36px] rounded-md border border-[#dbe4f0] bg-white px-3 text-[11px] text-[#536989]">
+            <option value="all">All urgency</option>
+            {requestUrgencies.map((urgency) => <option key={urgency}>{urgency}</option>)}
+          </select>
+          <select aria-label="Filter by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-[36px] rounded-md border border-[#dbe4f0] bg-white px-3 text-[11px] text-[#536989]">
+            <option value="all">All statuses</option>
+            {requestStatuses.map((status) => <option key={status} value={status}>{status[0].toUpperCase() + status.slice(1)}</option>)}
+          </select>
+        </div>
+
+        {error && <p role="alert" className="border-b border-red-100 bg-red-50 px-[18px] py-3 text-[12px] text-red-700">{error}</p>}
+        {notice && <p role="status" className="border-b border-green-100 bg-green-50 px-[18px] py-3 text-[12px] text-green-800">{notice}</p>}
+
+        {!authenticated ? (
+          <div className="px-5 py-12 text-center">
+            <p className="text-[13px] text-[#536989]">Log in to view and manage requests.</p>
+            <button type="button" onClick={onRequestLogin} className="mt-3 text-[12px] font-semibold text-[#2d5df1]">Log in</button>
+          </div>
+        ) : isLoading ? (
+          <p role="status" className="px-5 py-12 text-center text-[12px] text-[#7184a1]">Loading requests...</p>
+        ) : filteredRequests.length === 0 ? (
+          <p className="px-5 py-12 text-center text-[12px] text-[#7184a1]">{requests.length ? "No requests match your filters." : "No requests yet."}</p>
+        ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1000px] border-collapse text-left">
+            <thead className="bg-[#f8fafc]">
+              <tr className="border-b border-[#dbe4f0]">
+                {[
+                  "REQUEST ID",
+                  "SHELTER",
+                  "REQUESTED ITEM",
+                  "QUANTITY",
+                  "URGENCY",
+                  "STATUS",
+                  "ACTIONS",
+                ].map((heading) => (
+                  <th key={heading} className="px-[14px] py-[13px] text-[10px] font-bold tracking-wide text-[#6a80a3]">
+                    {heading}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRequests.map((request) => (
+                <tr key={request.request_id} className="h-[55px] border-b border-[#e9eef5] last:border-b-0">
+                  <td className="px-[14px] font-mono text-[10px] font-semibold text-[#2d5df1]">REQ-{String(request.request_id).padStart(5, "0")}</td>
+                  <td className="px-[14px] text-[11px] font-semibold text-[#111a2e]">{request.shelter || "Unspecified shelter"}</td>
+                  <td className="px-[14px] text-[11px] text-[#536989]">{request.item_name}</td>
+                  <td className="px-[14px] text-[11px] text-[#536989]">{request.quantity}</td>
+                  <td className="px-[14px]">
+                    <span className={`inline-flex rounded-full px-[9px] py-[5px] text-[10px] font-semibold ${urgencyStyles[request.urgency] || urgencyStyles.Moderate}`}>{request.urgency}</span>
+                  </td>
+                  <td className="px-[14px]">
+                    <select aria-label={`Status for request ${request.request_id}`} value={request.status} disabled={request.status === "approved"} onChange={(event) => updateRequestStatus(request, event.target.value)} className={`rounded-full border-0 px-[9px] py-[5px] text-[10px] font-semibold disabled:cursor-not-allowed ${requestStatusStyles[request.status] || "bg-slate-100 text-slate-600"}`}>
+                      {requestStatuses.map((status) => <option key={status} value={status}>{status[0].toUpperCase() + status.slice(1)}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-[14px] text-right">
+                    <button type="button" onClick={() => deleteRequest(request.request_id)} title="Delete request" aria-label={`Delete request ${request.request_id}`} className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[#7184a1] hover:bg-red-50 hover:text-red-600">
+                      <Trash2 size={15} aria-hidden="true" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        )}
+        {authenticated && !isLoading && (
+        <div className="flex h-[52px] items-center border-t border-[#dbe4f0] px-[18px]">
+          <p className="text-[10px] text-[#7184a1]">Showing {filteredRequests.length} of {requests.length} requests</p>
         </div>
         )}
       </section>
@@ -362,6 +630,9 @@ export default function App() {
 
         {activePage === "inventory" && !checkingSession && (
           <InventoryPage authenticated={authenticated} onRequestLogin={() => setShowLogin(true)} />
+        )}
+        {(activePage === "requests" || activePage === "supply-requests") && !checkingSession && (
+          <SupplyRequestsPage authenticated={authenticated} onRequestLogin={() => setShowLogin(true)} />
         )}
 
       </div>

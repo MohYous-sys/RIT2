@@ -66,7 +66,13 @@ class BackendApiTests(unittest.TestCase):
         account_id = self.create_authenticated_account()
 
         response = self.client.post(
-            "/requests", json={"item_name": "Water", "quantity": 4}
+            "/requests",
+            json={
+                "item_name": "Drinking Water",
+                "shelter": "Downtown Emergency Shelter",
+                "quantity": 4,
+                "urgency": "Critical",
+            },
         )
         self.assertEqual(response.status_code, 201)
         request_id = response.json["request_id"]
@@ -75,34 +81,167 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["account_id"], account_id)
         self.assertEqual(response.json["status"], "pending")
+        self.assertEqual(response.json["shelter"], "Downtown Emergency Shelter")
+        self.assertEqual(response.json["urgency"], "Critical")
 
         response = self.client.put(
             f"/requests/{request_id}",
-            json={"item_name": "Water", "quantity": 5, "status": "approved"},
+            json={
+                "item_name": "Drinking Water",
+                "shelter": "Creek Relief Center",
+                "quantity": 5,
+                "urgency": "High",
+                "status": "pending",
+            },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.client.get("/requests").json[0]["quantity"], 5)
+        updated_request = self.client.get("/requests").json[0]
+        self.assertEqual(updated_request["quantity"], 5)
+        self.assertEqual(updated_request["shelter"], "Creek Relief Center")
+        self.assertEqual(updated_request["urgency"], "High")
 
         self.assertEqual(self.client.delete(f"/requests/{request_id}").status_code, 200)
         self.assertEqual(self.client.get(f"/requests/{request_id}").status_code, 404)
+
+    def test_approval_deducts_available_inventory_and_keeps_remainder_pending(self):
+        self.create_authenticated_account()
+        for warehouse_code, quantity in (("WH-001", 2), ("WH-002", 3)):
+            response = self.client.post(
+                "/warehouse",
+                json={
+                    "item_name": "Drinking Water",
+                    "quantity": quantity,
+                    "warehouse_code": warehouse_code,
+                },
+            )
+            self.assertEqual(response.status_code, 201)
+
+        response = self.client.post(
+            "/requests",
+            json={
+                "item_name": "Drinking Water",
+                "shelter": "Downtown Emergency Shelter",
+                "quantity": 8,
+            },
+        )
+        request_id = response.json["request_id"]
+
+        response = self.client.put(
+            f"/requests/{request_id}",
+            json={"item_name": "Drinking Water", "quantity": 8, "status": "approved"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["fulfilled_quantity"], 5)
+        self.assertEqual(response.json["quantity"], 3)
+        self.assertEqual(response.json["status"], "pending")
+        self.assertEqual(
+            sum(item["quantity"] for item in self.client.get("/warehouse").json),
+            0,
+        )
+
+        response = self.client.put(
+            f"/requests/{request_id}",
+            json={"item_name": "Drinking Water", "quantity": 3, "status": "approved"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["fulfilled_quantity"], 0)
+        self.assertEqual(response.json["quantity"], 3)
+        self.assertEqual(response.json["status"], "pending")
+
+        self.client.post(
+            "/warehouse",
+            json={
+                "item_name": "Drinking Water",
+                "quantity": 3,
+                "warehouse_code": "WH-003",
+            },
+        )
+        response = self.client.put(
+            f"/requests/{request_id}",
+            json={"item_name": "Drinking Water", "quantity": 3, "status": "approved"},
+        )
+        self.assertEqual(response.json["fulfilled_quantity"], 3)
+        self.assertEqual(response.json["quantity"], 0)
+        self.assertEqual(response.json["status"], "approved")
+        self.assertEqual(
+            sum(item["quantity"] for item in self.client.get("/warehouse").json),
+            0,
+        )
 
     def test_request_rejects_invalid_values(self):
         self.create_authenticated_account()
 
         self.assertEqual(
             self.client.post(
-                "/requests", json={"item_name": "Water", "quantity": 0}
+                "/requests",
+                json={
+                    "item_name": "Drinking Water",
+                    "shelter": "Downtown Emergency Shelter",
+                    "quantity": 0,
+                },
             ).status_code,
             400,
         )
         response = self.client.post(
-            "/requests", json={"item_name": "Water", "quantity": 2}
+            "/requests",
+            json={
+                "item_name": "Drinking Water",
+                "shelter": "Downtown Emergency Shelter",
+                "quantity": 2,
+            },
         )
         request_id = response.json["request_id"]
         self.assertEqual(
             self.client.put(
                 f"/requests/{request_id}",
-                json={"item_name": "Water", "quantity": 2, "status": "unknown"},
+                json={"item_name": "Drinking Water", "quantity": 2, "status": "unknown"},
+            ).status_code,
+            400,
+        )
+        for status in ("fulfilled", "rejected"):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    self.client.put(
+                        f"/requests/{request_id}",
+                        json={
+                            "item_name": "Drinking Water",
+                            "quantity": 2,
+                            "status": status,
+                        },
+                    ).status_code,
+                    400,
+                )
+        self.assertEqual(
+            self.client.post(
+                "/requests",
+                json={
+                    "item_name": "Drinking Water",
+                    "shelter": "Downtown Emergency Shelter",
+                    "quantity": 2,
+                    "urgency": "Immediate",
+                },
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/requests",
+                json={
+                    "item_name": "Blankets",
+                    "shelter": "Downtown Emergency Shelter",
+                    "quantity": 2,
+                },
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/requests",
+                json={
+                    "item_name": "Drinking Water",
+                    "shelter": "Unknown Shelter",
+                    "quantity": 2,
+                },
             ).status_code,
             400,
         )
@@ -115,8 +254,63 @@ class BackendApiTests(unittest.TestCase):
         connection.close()
         self.assertEqual(
             columns,
-            {"request_id", "account_id", "item_name", "quantity", "status", "created_at"},
+            {
+                "request_id",
+                "account_id",
+                "item_name",
+                "shelter",
+                "quantity",
+                "urgency",
+                "status",
+                "created_at",
+            },
         )
+        connection = database.get_db_connection("requests.db")
+        with self.assertRaises(Exception):
+            connection.execute(
+                "INSERT INTO requests (account_id, item_name, quantity, status) VALUES (1, 'Water', 1, 'fulfilled')"
+            )
+        connection.close()
+
+    def test_request_schema_migrates_existing_rows(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            database, "DATABASE_DIR", Path(directory)
+        ):
+            connection = database.get_db_connection("requests.db")
+            connection.execute(
+                """CREATE TABLE requests (
+                    request_id INTEGER PRIMARY KEY,
+                    account_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'approved', 'fulfilled', 'rejected')),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            connection.executemany(
+                "INSERT INTO requests (request_id, account_id, item_name, quantity, status) VALUES (?, 3, 'Water', 2, ?)",
+                [(1, "pending"), (2, "approved"), (3, "fulfilled"), (4, "rejected")],
+            )
+            connection.commit()
+            connection.close()
+
+            database.init_databases()
+            connection = database.get_db_connection("requests.db")
+            migrated = connection.execute(
+                "SELECT request_id, shelter, urgency, status, quantity FROM requests ORDER BY request_id"
+            ).fetchall()
+            connection.close()
+
+            self.assertEqual(
+                [tuple(row) for row in migrated],
+                [
+                    (1, "", "Moderate", "pending", 2),
+                    (2, "", "Moderate", "pending", 2),
+                    (3, "", "Moderate", "approved", 0),
+                    (4, "", "Moderate", "pending", 2),
+                ],
+            )
 
     def test_warehouse_only_accepts_supported_items_and_statuses(self):
         self.create_authenticated_account()

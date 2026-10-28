@@ -13,6 +13,7 @@ export default defineConfig({
       '/logout': 'http://127.0.0.1:5001',
       '/session': 'http://127.0.0.1:5001',
       '/warehouse': 'http://127.0.0.1:5001',
+      '/requests': 'http://127.0.0.1:5001',
     },
   },
 })
