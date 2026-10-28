@@ -252,3 +252,37 @@ def init_databases():
 if __name__ == "__main__":
     init_databases()
     print("Database schemas are ready.")
+
+
+import sqlite3('requests.db')
+def create_requests_database():
+    conn = sqlite3.connect
+    cursor = conn.cursor()
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS requests (
+    id TEXT PRIMARY KEY
+       CHECK(id IN ('req-001', 'req-002', 'req-003', 'req-004', 'req-005')),
+    item TEXT NOT NULL
+       CHECK(item IN ('Drinking water', 'Food pack', 'First aid kits', 'Medical supplies'
+       )),
+    amount INTEGER NOT NULL CHECK(amount > 0),
+    status TEXT NOT NULL DEFAULT 'Pending'
+       CHECK(status IN ('Done', 'Pending')),
+    need TEXT NOT NULL 
+       CHECK(need IN ('Critical', 'Meduim', 'Low'))
+
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+create_requests_database()
+
+
+       
+       
+       
+       
+       
