@@ -313,5 +313,3 @@ def init_databases():
 if __name__ == "__main__":
     init_databases()
     print("Database schemas are ready.")
-
-       

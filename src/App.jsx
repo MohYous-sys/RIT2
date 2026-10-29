@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, Search, Plus, Trash2 } from "lucide-react";
 import Sidebar from "./Sidebar";
+import Overview from "./Overview.jsx";
 
 const inventoryItems = ["Drinking Water", "Food Packs", "First Aid Kits", "Medical Supplies"];
 const inventoryWarehouses = ["WH-001", "WH-002", "WH-003", "WH-004", "WH-005"];
@@ -627,7 +628,12 @@ export default function App() {
             </span>
           </div>
         </header>
-
+        {activePage === "overview" && (
+          <Overview
+            authenticated={authenticated}
+            onRequestLogin={() => setShowLogin(true)}
+          />
+        )}
         {activePage === "inventory" && !checkingSession && (
           <InventoryPage authenticated={authenticated} onRequestLogin={() => setShowLogin(true)} />
         )}
